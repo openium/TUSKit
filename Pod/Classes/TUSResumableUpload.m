@@ -14,10 +14,12 @@
 #define HTTP_PATCH @"PATCH"
 #define HTTP_POST @"POST"
 #define HTTP_HEAD @"HEAD"
-#define HTTP_OFFSET @"Offset"
-#define HTTP_FINAL_LENGTH @"Final-Length"
+#define HTTP_OFFSET @"Upload-Offset"
+#define HTTP_UPLOAD_LENGTH @"Upload-Length"
+#define HTTP_TUS_RESUMABLE @"Tus-Resumable"
+#define HTTP_TUS_RESUMABLE_1_0_0 @"1.0.0"
 #define HTTP_LOCATION @"Location"
-#define REQUEST_TIMEOUT 30
+#define REQUEST_TIMEOUT 10
 
 typedef NS_ENUM(NSInteger, TUSUploadState) {
     Idle,
@@ -51,7 +53,13 @@ typedef NS_ENUM(NSInteger, TUSUploadState) {
     return self;
 }
 
-- (void) start
+- (void)stop
+{
+    self.state = Idle;
+    [self.data stop];
+}
+
+- (void)start
 {
     if (self.progressBlock) {
         self.progressBlock(0, 0);
@@ -68,12 +76,15 @@ typedef NS_ENUM(NSInteger, TUSUploadState) {
     [self checkFile];
 }
 
-- (void) createFile
+- (void)createFile
 {
     [self setState:CreatingFile];
 
     NSUInteger size = [[self data] length];
-    NSDictionary *headers = @{ HTTP_FINAL_LENGTH: [NSString stringWithFormat:@"%u", size] } ;
+    NSDictionary *headers = @{
+                              HTTP_UPLOAD_LENGTH: [NSString stringWithFormat:@"%u", size],
+                              HTTP_TUS_RESUMABLE: HTTP_TUS_RESUMABLE_1_0_0
+                             };
     NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:[self endpoint] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:REQUEST_TIMEOUT];
     [request setHTTPMethod:HTTP_POST];
     [request setHTTPShouldHandleCookies:NO];
@@ -82,24 +93,32 @@ typedef NS_ENUM(NSInteger, TUSUploadState) {
     NSURLConnection *connection __unused = [[NSURLConnection alloc] initWithRequest:request delegate:self];
 }
 
-- (void) checkFile
+- (void)checkFile
 {
     [self setState:CheckingFile];
     
+    NSDictionary *headers = @{
+                              HTTP_TUS_RESUMABLE: HTTP_TUS_RESUMABLE_1_0_0
+                            };
     NSMutableURLRequest *request = [[NSMutableURLRequest alloc] initWithURL:[self url] cachePolicy:NSURLRequestReloadIgnoringLocalCacheData timeoutInterval:REQUEST_TIMEOUT];
     [request setHTTPMethod:HTTP_HEAD];
     [request setHTTPShouldHandleCookies:NO];
+    [request setAllHTTPHeaderFields:headers];
     
     NSURLConnection *connection __unused = [[NSURLConnection alloc] initWithRequest:request delegate:self];
 }
 
-- (void) uploadFile
+- (void)uploadFile
 {
     [self setState:UploadingFile];
+    [self.data start];
     
     long long offset = [self offset];
-    NSDictionary *headers = @{ HTTP_OFFSET: [NSString stringWithFormat:@"%lld", offset],
-                               @"Content-Type": @"application/offset+octet-stream"};
+    NSDictionary *headers = @{
+                              HTTP_OFFSET: [NSString stringWithFormat:@"%lld", offset],
+                              HTTP_TUS_RESUMABLE: HTTP_TUS_RESUMABLE_1_0_0,
+                              @"Content-Type": @"application/offset+octet-stream"
+                             };
 
     __weak TUSResumableUpload* upload = self;
     self.data.failureBlock = ^(NSError* error) {
@@ -164,7 +183,7 @@ didReceiveResponse:(NSURLResponse *)response
     
     switch([self state]) {
         case CheckingFile: {
-            if (httpResponse.statusCode != 200) {
+            if (httpResponse.statusCode != 200 && httpResponse.statusCode != 204) {
                 NSLog(@"Server responded with %d. Restarting upload",
                       httpResponse.statusCode);
                 [self createFile];
@@ -173,24 +192,26 @@ didReceiveResponse:(NSURLResponse *)response
             NSString *rangeHeader = [headers valueForKey:HTTP_OFFSET];
             if (rangeHeader) {
                 long long size = [rangeHeader longLongValue];
-                if (size >= [self offset]) {
-                  //TODO: we skip file upload, but we mightly verifiy that file?
-                  [self setState:Idle];
-                  TUSLog(@"Skipped upload to %@ for fingerprint %@", [self url], [self fingerprint]);
-                  NSMutableDictionary* resumableUploads = [self resumableUploads];
-                  [resumableUploads removeObjectForKey:[self fingerprint]];
-                  BOOL success = [resumableUploads writeToURL:[self resumableUploadsFilePath]
-                                                   atomically:YES];
-                  if (!success) {
-                    TUSLog(@"Unable to save resumableUploads file");
-                  }
-                  if (self.resultBlock) {
-                    self.resultBlock(self.url);
-                  }
-                  break;
-                } else {
-                  [self setOffset:size];
-                }
+//                if (size >= [self offset]) {
+//                  //TODO: we skip file upload, but we mightly verifiy that file?
+//                  [self setState:Idle];
+//                  TUSLog(@"Skipped upload to %@ for fingerprint %@", [self url], [self fingerprint]);
+//                  NSMutableDictionary* resumableUploads = [self resumableUploads];
+//                  [resumableUploads removeObjectForKey:[self fingerprint]];
+//                  BOOL success = [resumableUploads writeToURL:[self resumableUploadsFilePath]
+//                                                   atomically:YES];
+//                  if (!success) {
+//                    TUSLog(@"Unable to save resumableUploads file");
+//                  }
+//                  if (self.resultBlock) {
+//                    self.resultBlock(self.url);
+//                  }
+//                  break;
+//                } else {
+//                  [self setOffset:size];
+//                }
+                [self setOffset:size];
+                [self.data setOffset:size];
                 TUSLog(@"Resumable upload at %@ for %@ from %lld (%@)",
                       [self url], [self fingerprint], [self offset], rangeHeader);
             }
@@ -228,7 +249,7 @@ totalBytesExpectedToWrite:(NSInteger)totalBytesExpectedToWrite
     switch([self state]) {
         case UploadingFile:
             if (self.progressBlock) {
-                self.progressBlock(totalBytesWritten+[self offset], [[self data] length]+[self offset]);
+                self.progressBlock(totalBytesWritten + [self offset], [[self data] length]);
             }
             break;
         default:

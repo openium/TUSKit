@@ -12,7 +12,6 @@
 #define TUS_BUFSIZE (32*1024)
 
 @interface TUSData ()
-@property (assign) long long offset;
 @property (strong, nonatomic) NSInputStream* inputStream;
 @property (strong, nonatomic) NSOutputStream* outputStream;
 @property (strong, nonatomic) NSData* data;
@@ -36,7 +35,6 @@
         self.outputStream.delegate = self;
         [self.outputStream scheduleInRunLoop:[NSRunLoop currentRunLoop]
                                      forMode:NSDefaultRunLoopMode];
-        [self.outputStream open];
     }
     return self;
 }
@@ -54,6 +52,11 @@
 - (NSInputStream*)dataStream
 {
     return _inputStream;
+}
+
+- (void)start
+{
+    [self.outputStream open];
 }
 
 - (void)stop
@@ -146,7 +149,10 @@
         case NSStreamEventHasBytesAvailable:
         case NSStreamEventEndEncountered:
         default:
-            assert(NO);     // should never happen for the output stream
+            if (self.failureBlock) {
+                self.failureBlock([aStream streamError]);
+            }
+//            assert(NO);     // should never happen for the output stream
             break;
     }
 }

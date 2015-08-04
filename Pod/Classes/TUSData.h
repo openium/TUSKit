@@ -10,6 +10,8 @@
 
 @interface TUSData : NSObject <NSStreamDelegate>
 
+@property (assign) long long offset;
+
 @property (readwrite,copy) void (^failureBlock)(NSError* error);
 @property (readwrite,copy) void (^successBlock)(void);
 
@@ -17,5 +19,6 @@
 - (NSInputStream*)dataStream;
 - (long long)length;
 - (void)stop;
+- (void)start;
 
 @end

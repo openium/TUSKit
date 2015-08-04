@@ -37,6 +37,7 @@ NS_ENUM(long long, TUSRangeBytes) {TUSInvalidRange = -1};
 - (id)initWithURL:(NSString *)url
               data:(TUSData *)data
        fingerprint:(NSString *)fingerprint;
-- (void) start;
+- (void)start;
+- (void)stop;
 
 @end
